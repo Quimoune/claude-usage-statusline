@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionUsage } from 'claude-code'
 
-import type { LastStep, Place, RateLimit, Segment, Snapshot, Span, Tally } from '../types'
+import type { LastStep, Place, RateLimit, ScopedLimit, Segment, Snapshot, Span, Tally } from '../types'
 
 // Band segments: the details panel's three, plus the ones a press acts on directly.
 type Kind = Segment | 'dir' | 'git' | 'model'
@@ -28,6 +28,14 @@ const lastStep = atom({ plugin: 'usage-band', key: 'lastStep' } as const, { outp
 })
 const place = atom({ plugin: 'usage-band', key: 'place' } as const, null, { shape: 'place-1' })
 const tally = atom({ plugin: 'usage-band', key: 'tally' } as const, null, { shape: 'tally-1' })
+const scopedLimits = atom({ plugin: 'usage-band', key: 'scopedLimits' } as const, [], {
+  shape: 'scoped-limits-1',
+})
+
+// The endpoint behind /usage: its `limits[]` rows carry the per-model weekly
+// meters ("Current week (Fable)") that the rate-limit headers do not.
+const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
+const USAGE_MIN_INTERVAL_MS = 60_000
 
 // --- Formatting helpers (no Intl assumed in the mod runtime) ---
 
@@ -82,6 +90,56 @@ const contextColor = (p?: number) =>
   p === undefined ? 'inactive' : p > 75 ? 'error' : p >= 20 ? 'warning' : 'suggestion'
 
 const quotaColor = (p: number) => (p >= 95 ? 'error' : p > 60 ? 'warning' : 'success')
+
+// The server grades its own rows; an unknown grade falls back to the percent.
+const severityColor = (l: ScopedLimit) =>
+  l.severity === 'critical' ? 'error' : l.severity === 'warning' ? 'warning' : l.severity === 'normal' ? 'success' : quotaColor(l.percentUsed)
+
+type UsageRow = {
+  kind?: string
+  percent?: number
+  utilization?: number
+  resets_at?: string | null
+  severity?: string
+  scope?: { model?: { display_name?: string } | null; surface?: { display_name?: string } | null } | null
+}
+
+// Fetches the plan's usage rows with the session's own claude.ai credential;
+// null when there is none (API key, 3P provider) or the call fails, so the
+// last reading stays.
+const fetchScopedLimits = async ($: EngineInterface): Promise<ScopedLimit[] | null> => {
+  const auth = await $.session.authorize()
+  if (auth?.kind !== 'bearer') return null
+  const response = await $.http.fetch(USAGE_URL, {
+    auth: auth.handle,
+    headers: { 'anthropic-beta': 'oauth-2025-04-20', 'content-type': 'application/json' },
+  })
+  if (!response.ok) return null
+  const body = JSON.parse(response.text) as { limits?: UsageRow[] | null }
+  if (!Array.isArray(body.limits)) return null
+  return body.limits
+    .filter(r => r.kind === 'weekly_scoped')
+    .map(r => ({
+      label: r.scope?.model?.display_name ?? r.scope?.surface?.display_name ?? 'scoped',
+      percentUsed: Math.round((r.percent ?? r.utilization ?? 0) * 10) / 10,
+      resetsAt: r.resets_at ?? undefined,
+      severity: r.severity ?? 'normal',
+    }))
+}
+
+let lastUsageFetch = 0
+
+async function refreshScopedLimits($: EngineInterface, force = false) {
+  const now = Date.now()
+  if (!force && now - lastUsageFetch < USAGE_MIN_INTERVAL_MS) return
+  lastUsageFetch = now
+  try {
+    const limits = await fetchScopedLimits($)
+    if (limits) await update($, scopedLimits, () => limits)
+  } catch {
+    // Offline or a body of another shape: keep the last reading.
+  }
+}
 
 const toSnapshot = (u: Pick<SessionUsage, 'context' | 'rateLimits' | 'cost'>, startedAt: number): Snapshot => ({
   startedAt,
@@ -335,7 +393,7 @@ const effortCard = (step: LastStep) => {
   return `Model: ${model} · effort: ${step.effort}`
 }
 
-const hoverCard = (s: Kind, snap: Snapshot, where: Place | null, step: LastStep) => {
+const hoverCard = (s: Kind, snap: Snapshot, where: Place | null, step: LastStep, scoped: ScopedLimit[]) => {
   switch (s) {
     case 'dir':
       return where ? `! open ${where.cwd}` : 'Open the folder'
@@ -355,13 +413,13 @@ const hoverCard = (s: Kind, snap: Snapshot, where: Place | null, step: LastStep)
       const left = snap.contextWindow - snap.contextTokens
       return `Context: ${thousands(snap.contextTokens)} / ${thousands(snap.contextWindow)} tokens · ${thousands(left)} left`
     }
-    case 'quota':
-      return snap.rateLimits.length === 0
-        ? 'Quotas: no reading yet'
-        : 'Quotas: ' +
-            snap.rateLimits
-              .map(r => `${windowName(r.kind)} ${r.percentUsed}% (reset ${resetLabel(r.resetsAt)})`)
-              .join(' · ')
+    case 'quota': {
+      const parts = [
+        ...snap.rateLimits.map(r => `${windowName(r.kind)} ${r.percentUsed}% (reset ${resetLabel(r.resetsAt)})`),
+        ...scoped.map(l => `${l.label} 7d ${l.percentUsed}%`),
+      ]
+      return parts.length === 0 ? 'Quotas: no reading yet' : `Quotas: ${parts.join(' · ')}`
+    }
   }
 }
 
@@ -408,6 +466,7 @@ export const register: Register = on => {
     await update($, snapshot, () => toSnapshot(usage, usage.startedAt))
     const result = await next(e)
     schedule($)
+    void refreshScopedLimits($, true)
 
     return result
   })
@@ -416,6 +475,8 @@ export const register: Register = on => {
     const startedAt = (await read($, snapshot))?.startedAt ?? (await $.session.usage()).startedAt
     await update($, snapshot, () => toSnapshot(e, startedAt))
     schedule($)
+    // A header window moved: the scoped meters likely moved too.
+    if (e.changed.includes('rateLimits')) void refreshScopedLimits($)
 
     return next(e)
   })
@@ -470,6 +531,7 @@ export const register: Register = on => {
     const current = await read($, selected)
     const expanded = await read($, isExpanded)
     const counts = await read($, tally)
+    const scoped = await read($, scopedLimits)
     if (e.props.hasSurvey || snap === null || spans.length === 0) {
       return next(e)
     }
@@ -485,6 +547,7 @@ export const register: Register = on => {
       }
       void update($, selected, () => s)
       void update($, isExpanded, () => true)
+      if (s === 'quota') void refreshScopedLimits($)
     }
     const press = (kind: Kind) => {
       if (kind === 'dir') {
@@ -537,7 +600,7 @@ export const register: Register = on => {
         <Text dimColor>{card('hover: details · click: open')}</Text>
         {kinds.map(s => (
           <Box position="absolute" top={0} left={0} display="none" hover={{ scope: `usage-${s}`, display: 'flex' }}>
-            <Text>{card(hoverCard(s, snap, where, step))}</Text>
+            <Text>{card(hoverCard(s, snap, where, step, scoped))}</Text>
           </Box>
         ))}
       </Box>
@@ -637,12 +700,19 @@ export const register: Register = on => {
     } else {
       body = (
         <Box flexDirection="column">
-          {snap.rateLimits.length === 0 && heading('No quota reading yet')}
+          {snap.rateLimits.length === 0 && scoped.length === 0 && heading('No quota reading yet')}
           {snap.rateLimits.map((r: RateLimit) => (
             <Box flexDirection="column">
               {heading(`${windowName(r.kind)} window`)}
               {row('Used', `${bar(r.percentUsed, barWidth)} ${r.percentUsed}%`, quotaColor(r.percentUsed))}
               {row('Resets', resetLabel(r.resetsAt))}
+            </Box>
+          ))}
+          {scoped.map(l => (
+            <Box flexDirection="column">
+              {heading(`7d window (${l.label})`)}
+              {row('Used', `${bar(l.percentUsed, barWidth)} ${l.percentUsed}%`, severityColor(l))}
+              {row('Resets', resetLabel(l.resetsAt))}
             </Box>
           ))}
         </Box>

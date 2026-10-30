@@ -153,3 +153,61 @@ test('without a statusLine setting or a ~/.claude copy, the band runs the script
   expect(commands[0]).toMatch(/^bash "\/.+\/statusline-command\.sh"$/)
   expect(commands[0]).not.toContain('/home/.claude/')
 })
+
+test('the quota tab and card add the per-model weekly meters /usage shows', async ($, on) => {
+  const clock = mock.clock(on)
+  const fetched: { url: string; auth?: string }[] = []
+  on('command.register', () => ({ value: { command: 'usage-details' } }))
+  on('session.usage', () => ({
+    value: {
+      startedAt: 0,
+      context: { tokens: 50_000, window: 200_000, percent: 25 },
+      rateLimits: [{ kind: 'five_hour', percentUsed: 12, resetsAt: '2026-10-29T22:20:00Z' }],
+      cost: { usd: 0.5 },
+    },
+  }))
+  on('settings.read', () => ({ value: {} }))
+  on('session.id', () => ({ value: 'abc' }))
+  on('session.cwd', () => ({ value: '/repo' }))
+  on('session.root', () => ({ value: '/repo' }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('env.get', () => ({ value: '/home' }))
+  on('fs.stat', () => {
+    throw new Error('missing')
+  })
+  on('fs.list', () => ({ value: [] }))
+  on('process.run', (_, e) => (e.argv[0] === 'git' ? ok('main\n') : ok(STATUS_LINE)))
+  on('session.authorize', () => ({ value: { handle: 'h1', kind: 'bearer' } }))
+  on('http.fetch', (_, e) => {
+    fetched.push({ url: e.url, auth: e.init?.auth })
+    const limits = [
+      { kind: 'session', group: 'session', percent: 12, resets_at: null, severity: 'normal', is_active: true },
+      { kind: 'weekly_all', group: 'weekly', percent: 40, resets_at: null, severity: 'normal', is_active: false },
+      {
+        kind: 'weekly_scoped',
+        group: 'weekly',
+        percent: 17,
+        resets_at: '2026-11-03T08:00:00Z',
+        scope: { model: { display_name: 'Fable' } },
+        severity: 'normal',
+        is_active: false,
+      },
+    ]
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ limits }) } }
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.advance(300)
+  expect(fetched).toEqual([{ url: 'https://api.anthropic.com/api/oauth/usage', auth: 'h1' }])
+
+  const ui = await $.ui.mount(BAND)
+  expect((await ui.find({ type: 'Text', text: /^Quotas: / }))?.text.trim()).toMatch(/· Fable 7d 17%$/)
+  await ui.press({ key: 'segment-quota' })
+  expect(await ui.find({ type: 'Text', text: /5h window/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /7d window \(Fable\)/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /17%$/ })).toBeDefined()
+  // Only the scoped rows: the session and all-models rows repeat the headers.
+  expect(await ui.find({ type: 'Text', text: /40%/ })).toBeUndefined()
+  await ui.unmount()
+})

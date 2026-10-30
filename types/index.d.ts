@@ -2,6 +2,11 @@ export type Segment = 'cost' | 'context' | 'quota'
 
 export type RateLimit = { kind: string; percentUsed: number; resetsAt?: string }
 
+// A per-model or per-surface weekly meter from the claude.ai usage endpoint
+// (`limits[]` rows of kind `weekly_scoped`, e.g. "Fable"), which the response
+// headers behind `RateLimit` never carry.
+export type ScopedLimit = { label: string; percentUsed: number; resetsAt?: string; severity: string }
+
 export type Snapshot = {
   startedAt: number
   costUsd?: number
@@ -47,6 +52,7 @@ declare module 'claude-code' {
       lastStep: Shaped<LastStep>
       place: Shaped<Place | null>
       tally: Shaped<Tally | null>
+      scopedLimits: Shaped<ScopedLimit[]>
     }
   }
 }

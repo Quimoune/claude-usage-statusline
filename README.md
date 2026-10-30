@@ -49,11 +49,11 @@ Clicking cost, context or quota unfolds the details panel on that tab:
 
 In detail:
 
-- **Hover** a segment: a one-line card replaces the hint under the band (folder path, repository URL, cost per hour and token count, context tokens left, every quota window with its reset).
+- **Hover** a segment: a one-line card replaces the hint under the band (folder path, repository URL, cost per hour and token count, context tokens left, every quota window with its reset, per-model weekly meters included).
 - **Click** cost, context or quota: a details panel unfolds under the band, with three tabs:
   - **Cost**: total, start time, duration, cost per hour and per response, input / output / cache tokens, cache hit rate, breakdown by model (subagents included).
   - **Context**: a usage bar, tokens used out of the window, the auto-compact threshold, and a breakdown by category.
-  - **Quotas**: a bar and a reset time for each rate-limit window (5 h, 7 d, …).
+  - **Quotas**: a bar and a reset time for each rate-limit window (5 h, 7 d, …), plus the per-model weekly meters `/usage` shows (e.g. "Current week (Fable)"), read from the claude.ai usage endpoint with the session's own sign-in, at most once a minute.
 - **Click** the folder: opens it (its Xcode workspace, project or Swift package when there is one).
 - **Click** the branch: opens the repository on GitHub / GitLab (the branch page once it is pushed).
 - **Click** the model: a toast with the full model id and the effort level.
