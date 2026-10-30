@@ -66,6 +66,7 @@ The band runs, in this order: the `statusLine` command from your settings if you
 - Claude Code. The mod needs a version that supports mods (plugins with a `hooks/hooks.json` hooks module); it was built and tested on Claude Code 2.1.314.
 - `bash`, [`jq`](https://jqlang.org), `git`, `python3` (used for the reset time and the last response time; without it those two segments are left out).
 - macOS for the band's folder and branch clicks (they use `open`). The script itself also runs on Linux.
+- For the per-model weekly meters (Quotas tab and hover card): a Claude subscription sign-in (`/login` with a claude.ai account). The mod then calls `https://api.anthropic.com/api/oauth/usage`, the undocumented endpoint behind `/usage`, through Claude Code with the session's own credential; the token never reaches the mod. With an API key, a third-party provider, or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` set, no call is made and those meters are simply left out.
 
 On macOS: `brew install jq` (git and python3 come with the Xcode Command Line Tools).
 
