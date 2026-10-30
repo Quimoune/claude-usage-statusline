@@ -1,0 +1,11 @@
+{
+  "name": "claude-usage-statusline",
+  "owner": { "name": "Quimoune" },
+  "plugins": [
+    {
+      "name": "usage-band",
+      "source": "./",
+      "description": "Cost, context and quota band above the prompt, with a hover card per item and a details pane on click"
+    }
+  ]
+}

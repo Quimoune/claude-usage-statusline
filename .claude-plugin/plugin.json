@@ -1,0 +1,8 @@
+{
+  "name": "usage-band",
+  "version": "0.1.0",
+  "description": "Cost, context and quota band above the prompt, with a hover card per item and a details pane on click",
+  "types": "./types/index.d.ts",
+  "license": "MIT",
+  "repository": "https://github.com/Quimoune/claude-usage-statusline"
+}
